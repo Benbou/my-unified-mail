@@ -1,36 +1,97 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# My Unified Mail
 
-## Getting Started
+Boîte de réception unifiée qui agrège les emails de plusieurs comptes Gmail dans une seule interface web.
 
-First, run the development server:
+## Fonctionnalités
+
+- **Multi-comptes** : agrège 2 comptes Gmail (Perso + Pro) dans une seule vue
+- **Lecture d'emails** : affichage du contenu HTML complet via IMAP + simpleParser
+- **Composition** : éditeur rich text Tiptap (Gras, Italique, Titres, Listes)
+- **Envoi** : envoi via Gmail SMTP avec sélection du compte d'expédition
+- **Threading** : regroupement des emails par conversation
+- **Cache** : Supabase comme cache pour un chargement instantané
+- **Sync optimiste** : UI charge depuis le cache, synchronise en arrière-plan
+- **Interface 3 colonnes** : sidebar nav + liste emails + panneau lecture (resizable)
+
+## Stack
+
+| Catégorie | Technologie |
+|-----------|-------------|
+| Framework | Next.js 16 (App Router, Server Components) |
+| Langage | TypeScript |
+| UI | shadcn/ui + Tailwind CSS v4 |
+| Email (lecture) | ImapFlow + mailparser |
+| Email (envoi) | Nodemailer (Gmail SMTP) |
+| Base de données | Supabase (PostgreSQL) |
+| Éditeur | Tiptap |
+
+## Installation
+
+```bash
+git clone https://github.com/ton-user/my-unified-mail.git
+cd my-unified-mail
+npm install
+```
+
+## Configuration
+
+Crée un fichier `.env.local` à la racine :
+
+```env
+# Compte Gmail Perso
+GMAIL_1_USER=ton.email.perso@gmail.com
+GMAIL_1_PASS=ton-app-password
+
+# Compte Gmail Pro
+GMAIL_2_USER=ton.email.pro@gmail.com
+GMAIL_2_PASS=ton-app-password
+
+# Supabase (optionnel)
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+```
+
+> Les mots de passe sont des **App Passwords Gmail**, pas les mots de passe du compte.
+> Google Account > Sécurité > Mots de passe des applications.
+
+> Supabase est **optionnel**. Sans configuration Supabase, l'app fonctionne en mode IMAP direct (plus lent au chargement).
+
+## Lancement
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Ouvre [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Commande | Description |
+|----------|-------------|
+| `npm run dev` | Serveur de développement |
+| `npm run build` | Build de production |
+| `npm run start` | Serveur de production |
+| `npm run lint` | Lint ESLint |
 
-## Learn More
+## Architecture
 
-To learn more about Next.js, take a look at the following resources:
+```
+src/
+├── app/
+│   ├── page.tsx          # Server Component (fetch emails)
+│   ├── actions.ts        # Server Actions (body, send, sync)
+│   └── layout.tsx        # Layout racine
+├── components/
+│   ├── mail-layout.tsx   # Layout 3 colonnes resizable
+│   ├── app-sidebar.tsx   # Sidebar navigation
+│   ├── email-list.tsx    # Liste emails + recherche
+│   ├── email-view.tsx    # Panneau lecture
+│   └── email-composer.tsx# Éditeur Tiptap
+└── lib/
+    ├── email.ts          # Moteur IMAP + Supabase
+    └── supabase.ts       # Client Supabase
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Licence
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
