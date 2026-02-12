@@ -1,11 +1,11 @@
 'use server';
 
 import { getEmailBody as fetchBody, markAsRead as markRead, getThreadMessages as fetchThread, syncEmails as doSync } from '@/lib/email';
-import type { EmailHeader } from '@/lib/email';
+import type { EmailHeader, EmailFolder } from '@/lib/email';
 import nodemailer from 'nodemailer';
 
-export async function getEmailBody(providerId: string, accountLabel: string) {
-  return fetchBody(providerId, accountLabel);
+export async function getEmailBody(providerId: string, accountLabel: string, folder: EmailFolder = 'inbox') {
+  return fetchBody(providerId, accountLabel, folder);
 }
 
 export async function markAsRead(providerId: string, accountLabel: string) {

@@ -1,23 +1,18 @@
 "use client"
 
 import * as React from "react"
+import { useHotkeys } from "react-hotkeys-hook"
 import { PenSquare } from "lucide-react"
-import { AppSidebar } from "@/components/app-sidebar"
+import { AppSidebar, parseFilter } from "@/components/app-sidebar"
 import { EmailList } from "@/components/email-list"
 import { EmailView } from "@/components/email-view"
 import { EmailComposer } from "@/components/email-composer"
+import { MailActions } from "@/components/mail-actions"
 import { Button } from "@/components/ui/button"
-import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable"
 import {
   SidebarInset,
   SidebarProvider,
-  SidebarTrigger,
 } from "@/components/ui/sidebar"
-import { Separator } from "@/components/ui/separator"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -27,13 +22,44 @@ import {
 import type { EmailHeader } from "@/lib/email"
 import { syncEmails } from "@/app/actions"
 
+const folderLabels: Record<string, string> = {
+  inbox: "Boîte de réception",
+  sent: "Envoyés",
+  trash: "Corbeille",
+  archive: "Archives",
+}
+
 export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] }) {
   const [emails, setEmails] = React.useState<EmailHeader[]>(initialEmails)
   const [selectedEmail, setSelectedEmail] = React.useState<EmailHeader | null>(
     null
   )
   const [composing, setComposing] = React.useState(false)
-  const [activeFilter, setActiveFilter] = React.useState<string | null>(null)
+  const [activeFilter, setActiveFilter] = React.useState("unified:inbox")
+
+  const handleFilterChange = React.useCallback((filter: string) => {
+    setActiveFilter(filter)
+    setSelectedEmail(null)
+    setComposing(false)
+  }, [])
+
+  // Keyboard shortcuts
+  useHotkeys("e", () => {
+    if (selectedEmail) console.log("Archive", selectedEmail.subject)
+  }, { enableOnFormTags: false }, [selectedEmail])
+
+  useHotkeys("shift+3, backspace", () => {
+    if (selectedEmail) console.log("Trash", selectedEmail.subject)
+  }, { enableOnFormTags: false }, [selectedEmail])
+
+  useHotkeys("r", () => {
+    if (selectedEmail) console.log("Reply", selectedEmail.subject)
+  }, { enableOnFormTags: false }, [selectedEmail])
+
+  useHotkeys("escape", () => {
+    if (composing) setComposing(false)
+    if (selectedEmail) setSelectedEmail(null)
+  }, { enableOnFormTags: true }, [selectedEmail, composing])
 
   // Background sync: fetch fresh emails from IMAP and update state
   React.useEffect(() => {
@@ -71,70 +97,67 @@ export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] })
     setComposing(false)
   }
 
+  const f = parseFilter(activeFilter)
+  const folderName = folderLabels[f.folder] ?? f.folder
+  const filterLabel = f.account ? `${f.account} — ${folderName}` : folderName
+
   const breadcrumbLabel = composing
     ? "Nouveau message"
     : selectedEmail
       ? selectedEmail.subject
-      : "Boîte de réception"
+      : filterLabel
 
   return (
-    <SidebarProvider>
+    <SidebarProvider defaultOpen={false} className="h-screen !min-h-0 overflow-hidden">
       <AppSidebar
         activeFilter={activeFilter}
-        onFilterChange={setActiveFilter}
+        onFilterChange={handleFilterChange}
       />
-      <SidebarInset className="overflow-hidden">
-        <ResizablePanelGroup orientation="horizontal" className="h-full">
-          {/* Middle panel: email list */}
-          <ResizablePanel defaultSize={35} minSize={25} maxSize={50}>
-            <EmailList
-              emails={emails}
-              selectedEmail={selectedEmail}
-              onSelectEmail={handleSelectEmail}
-              activeFilter={activeFilter}
-            />
-          </ResizablePanel>
+      <SidebarInset className="flex h-full overflow-hidden">
+        {/* Middle column: email list (fixed 450px) */}
+        <div className="w-[450px] shrink-0 border-r h-full">
+          <EmailList
+            emails={emails}
+            selectedEmail={selectedEmail}
+            onSelectEmail={handleSelectEmail}
+            activeFilter={activeFilter}
+          />
+        </div>
 
-          <ResizableHandle withHandle />
-
-          {/* Right panel: reading pane / composer */}
-          <ResizablePanel defaultSize={65} minSize={40}>
-            <div className="flex h-full flex-col">
-              <header className="bg-background sticky top-0 flex shrink-0 items-center gap-2 border-b p-4">
-                <SidebarTrigger className="-ml-1" />
-                <Separator
-                  orientation="vertical"
-                  className="mr-2 data-[orientation=vertical]:h-4"
-                />
-                <Breadcrumb>
-                  <BreadcrumbList>
-                    <BreadcrumbItem>
-                      <BreadcrumbPage className="truncate max-w-[300px]">
-                        {breadcrumbLabel}
-                      </BreadcrumbPage>
-                    </BreadcrumbItem>
-                  </BreadcrumbList>
-                </Breadcrumb>
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={handleCompose}
-                >
-                  <PenSquare className="mr-2 h-4 w-4" />
-                  Nouveau message
-                </Button>
-              </header>
-              <div className="flex-1 overflow-y-auto">
-                {composing ? (
-                  <EmailComposer onClose={handleCloseComposer} />
-                ) : (
-                  <EmailView email={selectedEmail} />
-                )}
-              </div>
+        {/* Right column: reading pane / composer (takes remaining space) */}
+        <div className="flex-1 min-w-0 flex flex-col h-full">
+          <header className="bg-background sticky top-0 flex shrink-0 items-center gap-2 border-b p-4">
+            <Breadcrumb>
+              <BreadcrumbList>
+                <BreadcrumbItem>
+                  <BreadcrumbPage className="truncate max-w-[300px]">
+                    {breadcrumbLabel}
+                  </BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
+            <div className="ml-auto flex items-center gap-2">
+              {selectedEmail && !composing && (
+                <MailActions email={selectedEmail} />
+              )}
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleCompose}
+              >
+                <PenSquare className="mr-2 h-4 w-4" />
+                Nouveau message
+              </Button>
             </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+          </header>
+          <div className="flex-1 overflow-y-auto">
+            {composing ? (
+              <EmailComposer onClose={handleCloseComposer} />
+            ) : (
+              <EmailView email={selectedEmail} />
+            )}
+          </div>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   )
