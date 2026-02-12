@@ -34,7 +34,7 @@ export function EmailView({ email }: { email: EmailHeader | null }) {
     setLoading(true)
     setError(null)
 
-    getEmailBody(email.id, email.accountLabel)
+    getEmailBody(email.id, email.accountLabel, email.folder)
       .then((html) => {
         if (cancelled) return
         setBody(html)
@@ -50,7 +50,7 @@ export function EmailView({ email }: { email: EmailHeader | null }) {
     return () => {
       cancelled = true
     }
-  }, [email?.id, email?.accountLabel])
+  }, [email?.id, email?.accountLabel, email?.folder])
 
   if (!email) {
     return (

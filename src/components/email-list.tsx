@@ -1,19 +1,11 @@
 "use client"
 
 import * as React from "react"
-import { Inbox, Mail, Send, Trash2, Users } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { parseFilter } from "@/components/app-sidebar"
 import type { EmailHeader } from "@/lib/email"
-
-const navMain = [
-  { title: "Tous", icon: Inbox, filter: null },
-  { title: "Perso", icon: Mail, filter: "Perso" },
-  { title: "Pro", icon: Users, filter: "Pro" },
-  { title: "Envoyés", icon: Send, filter: "__sent__" },
-  { title: "Corbeille", icon: Trash2, filter: "__trash__" },
-]
 
 const formatDate = (date: Date) => {
   const now = new Date()
@@ -34,7 +26,21 @@ const formatDate = (date: Date) => {
   }).format(new Date(date))
 }
 
-export { navMain }
+const folderLabels: Record<string, string> = {
+  inbox: "Boîte de réception",
+  sent: "Envoyés",
+  trash: "Corbeille",
+  archive: "Archives",
+}
+
+function getFilterLabel(activeFilter: string): string {
+  const f = parseFilter(activeFilter)
+  const folderName = folderLabels[f.folder] ?? f.folder
+  if (f.account) {
+    return `${f.account} — ${folderName}`
+  }
+  return folderName
+}
 
 export function EmailList({
   emails,
@@ -45,18 +51,21 @@ export function EmailList({
   emails: EmailHeader[]
   selectedEmail: EmailHeader | null
   onSelectEmail: (email: EmailHeader) => void
-  activeFilter: string | null
+  activeFilter: string
 }) {
   const [search, setSearch] = React.useState("")
 
-  const activeItem = navMain.find((n) => n.filter === activeFilter) ?? navMain[0]
-
   const filteredEmails = React.useMemo(() => {
+    const f = parseFilter(activeFilter)
     let result = emails
 
-    if (activeItem.filter && !activeItem.filter.startsWith("__")) {
-      result = result.filter((e) => e.accountLabel === activeItem.filter)
+    // Filter by account if specific account selected
+    if (f.account) {
+      result = result.filter((e) => e.accountLabel === f.account)
     }
+
+    // Filter by folder
+    result = result.filter((e) => e.folder === f.folder)
 
     if (search) {
       const q = search.toLowerCase()
@@ -68,14 +77,14 @@ export function EmailList({
     }
 
     return result
-  }, [emails, activeItem, search])
+  }, [emails, activeFilter, search])
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b p-4 pb-3">
+      <div className="shrink-0 border-b p-4 pb-3">
         <div className="flex w-full items-center justify-between gap-3">
           <div className="text-foreground text-base font-medium">
-            {activeItem.title}
+            {getFilterLabel(activeFilter)}
           </div>
           <Label className="flex items-center gap-2 text-sm">
             <span>Non lus</span>
