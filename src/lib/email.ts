@@ -36,13 +36,53 @@ function getAccountCreds(label: string): { user: string; pass: string } {
   return { user: process.env.GMAIL_2_USER!, pass: process.env.GMAIL_2_PASS! };
 }
 
-// Map our folder names to Gmail IMAP mailbox paths
+// Map our folder names to Gmail IMAP mailbox paths (English locale)
 const GMAIL_MAILBOX: Record<EmailFolder, string> = {
   inbox: 'INBOX',
   sent: '[Gmail]/Sent Mail',
   trash: '[Gmail]/Trash',
   archive: '[Gmail]/All Mail',
 };
+
+// IMAP special-use attributes for locale-independent mailbox discovery
+const FOLDER_SPECIAL_USE: Record<EmailFolder, string> = {
+  inbox: '\\Inbox',
+  sent: '\\Sent',
+  trash: '\\Trash',
+  archive: '\\All',
+};
+
+/**
+ * Resolve the actual mailbox path for a folder by querying IMAP special-use attributes.
+ * This handles Gmail accounts in non-English locales where folder names differ.
+ */
+async function resolveMailboxPath(client: ImapFlow, folder: EmailFolder): Promise<string> {
+  if (folder === 'inbox') return 'INBOX';
+
+  try {
+    const mailboxes = await client.list();
+    const attr = FOLDER_SPECIAL_USE[folder];
+    const match = mailboxes.find((mb) => mb.specialUse === attr);
+    if (match) return match.path;
+  } catch (err) {
+    console.error('resolveMailboxPath: list() failed, using English fallback:', err);
+  }
+
+  return GMAIL_MAILBOX[folder];
+}
+
+/** Safely disconnect an IMAP client, preventing uncaught socket timeouts. */
+async function safeImapDisconnect(client: ImapFlow) {
+  try {
+    await client.logout();
+  } catch {
+    try {
+      client.close();
+    } catch {
+      // ignore — connection already dead
+    }
+  }
+}
 
 async function fetchFromAccountFolder(
   user: string,
@@ -56,6 +96,7 @@ async function fetchFromAccountFolder(
     secure: true,
     auth: { user, pass },
     logger: false,
+    socketTimeout: 30_000,
   });
 
   const emails: EmailHeader[] = [];
@@ -63,7 +104,7 @@ async function fetchFromAccountFolder(
   try {
     await client.connect();
 
-    const mailbox = GMAIL_MAILBOX[folder];
+    const mailbox = await resolveMailboxPath(client, folder);
     const lock = await client.getMailboxLock(mailbox);
 
     try {
@@ -83,11 +124,11 @@ async function fetchFromAccountFolder(
     } finally {
       lock.release();
     }
-
-    await client.logout();
   } catch (err) {
     console.error(`Erreur sur le compte ${label} (${folder}):`, err);
     return [];
+  } finally {
+    await safeImapDisconnect(client);
   }
 
   return emails.reverse().slice(0, 50);
@@ -179,15 +220,15 @@ export async function syncEmails(): Promise<EmailHeader[]> {
 }
 
 export async function getEmailBody(providerId: string, accountLabel: string, folder: EmailFolder = 'inbox'): Promise<string> {
-  // 1. Check Supabase cache first
+  // 1. Check Supabase cache (without folder filter — legacy rows may all have folder='inbox')
   if (supabase) {
     const { data } = await supabase
       .from('emails')
       .select('body_html')
       .eq('provider_id', providerId)
       .eq('account_label', accountLabel)
-      .eq('folder', folder)
-      .single();
+      .limit(1)
+      .maybeSingle();
 
     if (data?.body_html) {
       return data.body_html;
@@ -196,34 +237,34 @@ export async function getEmailBody(providerId: string, accountLabel: string, fol
 
   // 2. Fetch full body via IMAP + simpleParser
   const { user, pass } = getAccountCreds(accountLabel);
-  const mailbox = GMAIL_MAILBOX[folder];
-
   const client = new ImapFlow({
     host: 'imap.gmail.com',
     port: 993,
     secure: true,
     auth: { user, pass },
     logger: false,
+    socketTimeout: 30_000,
   });
 
   let html = '';
 
   try {
     await client.connect();
+    const mailbox = await resolveMailboxPath(client, folder);
     const lock = await client.getMailboxLock(mailbox);
 
     try {
-      const source = await client.download(providerId, undefined, { uid: true });
+      const source = await client.download(Number(providerId), undefined, { uid: true });
       const parsed = await simpleParser(source.content);
       html = parsed.html || parsed.textAsHtml || '';
     } finally {
       lock.release();
     }
-
-    await client.logout();
   } catch (err) {
     console.error(`Error fetching body for ${providerId} (${accountLabel}/${folder}):`, err);
     return '';
+  } finally {
+    await safeImapDisconnect(client);
   }
 
   // 3. Cache in Supabase
@@ -232,8 +273,7 @@ export async function getEmailBody(providerId: string, accountLabel: string, fol
       .from('emails')
       .update({ body_html: html })
       .eq('provider_id', providerId)
-      .eq('account_label', accountLabel)
-      .eq('folder', folder);
+      .eq('account_label', accountLabel);
   }
 
   return html;

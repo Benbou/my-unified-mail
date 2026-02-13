@@ -93,10 +93,16 @@ export function EmailView({ email }: { email: EmailHeader | null }) {
           <p className="text-sm text-destructive">{error}</p>
         )}
         {body !== null && !loading && !error && (
-          <div
-            className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto"
-            dangerouslySetInnerHTML={{ __html: body }}
-          />
+          body ? (
+            <div
+              className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto"
+              dangerouslySetInnerHTML={{ __html: body }}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Le contenu de cet email n&apos;a pas pu être chargé.
+            </p>
+          )
         )}
       </div>
     </div>

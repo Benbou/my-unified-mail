@@ -20,7 +20,6 @@ import {
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb"
 import type { EmailHeader } from "@/lib/email"
-import { syncEmails } from "@/app/actions"
 
 const folderLabels: Record<string, string> = {
   inbox: "Boîte de réception",
@@ -61,13 +60,13 @@ export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] })
     if (selectedEmail) setSelectedEmail(null)
   }, { enableOnFormTags: true }, [selectedEmail, composing])
 
-  // Background sync: fetch fresh emails from IMAP and update state
+  // Background sync via Route Handler so it doesn't block Server Actions (getEmailBody)
   React.useEffect(() => {
     let cancelled = false
-    syncEmails()
-      .then((fresh) => {
+    fetch("/api/sync")
+      .then((res) => res.json())
+      .then((fresh: EmailHeader[]) => {
         if (!cancelled && fresh.length > 0) {
-          // Dates come back as strings from the server action, rehydrate them
           const rehydrated = fresh.map((e) => ({
             ...e,
             date: new Date(e.date),
@@ -113,7 +112,7 @@ export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] })
         activeFilter={activeFilter}
         onFilterChange={handleFilterChange}
       />
-      <SidebarInset className="flex h-full overflow-hidden">
+      <SidebarInset className="flex flex-row h-full overflow-hidden">
         {/* Middle column: email list (fixed 450px) */}
         <div className="w-[450px] shrink-0 border-r h-full">
           <EmailList

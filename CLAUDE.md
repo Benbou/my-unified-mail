@@ -19,7 +19,8 @@ src/
 ├── app/
 │   ├── layout.tsx            # Layout racine (fonts, metadata, TooltipProvider)
 │   ├── page.tsx              # Server Component async → fetch emails → <MailLayout>
-│   ├── actions.ts            # Server Actions (getEmailBody, markAsRead, sendEmail, syncEmails, getThreadMessages)
+│   ├── actions.ts            # Server Actions (getEmailBody, markAsRead, sendEmail, getThreadMessages)
+│   ├── api/sync/route.ts     # Route Handler GET /api/sync (sync IMAP sans bloquer les Server Actions)
 │   └── globals.css           # Variables CSS shadcn/ui + Tailwind v4
 ├── components/
 │   ├── mail-layout.tsx       # Client wrapper : état sélection + compose + sync optimiste
@@ -54,9 +55,11 @@ Chaque panneau scrolle indépendamment. La page ne scrolle jamais (`h-screen ove
 
 ### Lecture
 1. `page.tsx` (Server Component) appelle `getUnifiedEmails()` → charge depuis le cache Supabase (instantané) ou fallback IMAP
-2. `mail-layout.tsx` déclenche `syncEmails()` en background via `useEffect` → synchro IMAP silencieuse
-3. Clic sur un email → `getEmailBody()` vérifie le cache Supabase, sinon fetch via IMAP + simpleParser → cache le résultat
+2. `mail-layout.tsx` déclenche `fetch('/api/sync')` en background via `useEffect` → synchro IMAP silencieuse via Route Handler (ne bloque pas les Server Actions)
+3. Clic sur un email → `getEmailBody()` (Server Action) vérifie le cache Supabase, sinon fetch via IMAP + simpleParser → cache le résultat
 4. `markAsRead()` met à jour le flag `is_read` dans Supabase
+
+> **Note** : Le sync utilise un Route Handler (`GET /api/sync`) au lieu d'une Server Action car Next.js sérialise les Server Actions par client — un sync long (5-30s) bloquerait `getEmailBody()`.
 
 ### Threading
 - Les emails sont groupés par sujet normalisé (strip Re:/Fwd:/Fw:)
