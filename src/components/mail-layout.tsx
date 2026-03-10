@@ -3,6 +3,7 @@
 import * as React from "react"
 import { useHotkeys } from "react-hotkeys-hook"
 import { PenSquare } from "lucide-react"
+import { toast } from "sonner"
 import { AppSidebar, parseFilter } from "@/components/app-sidebar"
 import { EmailList } from "@/components/email-list"
 import { EmailView } from "@/components/email-view"
@@ -19,7 +20,9 @@ import {
   BreadcrumbList,
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb"
-import type { EmailHeader } from "@/lib/email"
+import { archiveEmail, trashEmail } from "@/app/actions"
+import type { EmailHeader, ComposeState, ComposeMode } from "@/lib/email-types"
+import { buildComposeState, composeTitles } from "@/lib/email-types"
 
 const folderLabels: Record<string, string> = {
   inbox: "Boîte de réception",
@@ -28,80 +31,188 @@ const folderLabels: Record<string, string> = {
   archive: "Archives",
 }
 
+function emailKey(e: EmailHeader) {
+  return `${e.accountLabel}-${e.id}`
+}
+
 export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] }) {
   const [emails, setEmails] = React.useState<EmailHeader[]>(initialEmails)
   const [selectedEmail, setSelectedEmail] = React.useState<EmailHeader | null>(
     null
   )
-  const [composing, setComposing] = React.useState(false)
+  const [composeState, setComposeState] = React.useState<ComposeState | null>(null)
   const [activeFilter, setActiveFilter] = React.useState("unified:inbox")
+  const [pendingRemovals, setPendingRemovals] = React.useState<Set<string>>(
+    () => new Set()
+  )
+
+  // Store the current email body for reply quoting (no re-render needed)
+  const bodyRef = React.useRef<string>("")
 
   const handleFilterChange = React.useCallback((filter: string) => {
     setActiveFilter(filter)
     setSelectedEmail(null)
-    setComposing(false)
+    setComposeState(null)
+  }, [])
+
+  const handleEmailAction = React.useCallback(
+    async (email: EmailHeader, action: "archive" | "trash") => {
+      const key = emailKey(email)
+
+      // Optimistic: hide immediately
+      setPendingRemovals((prev) => new Set(prev).add(key))
+
+      // Clear selection if it's the actioned email
+      setSelectedEmail((sel) =>
+        sel && emailKey(sel) === key ? null : sel
+      )
+
+      try {
+        if (action === "archive") {
+          await archiveEmail(email.id, email.accountLabel, email.folder)
+          toast.success("Email archivé")
+        } else {
+          await trashEmail(email.id, email.accountLabel, email.folder)
+          toast.success("Email supprimé")
+        }
+
+        // Remove from local state on success
+        setEmails((prev) => prev.filter((e) => emailKey(e) !== key))
+        setPendingRemovals((prev) => {
+          const next = new Set(prev)
+          next.delete(key)
+          return next
+        })
+      } catch (err) {
+        console.error(`${action} failed:`, err)
+        // Rollback: show again
+        setPendingRemovals((prev) => {
+          const next = new Set(prev)
+          next.delete(key)
+          return next
+        })
+        toast.error(
+          action === "archive"
+            ? "Erreur lors de l'archivage"
+            : "Erreur lors de la suppression"
+        )
+      }
+    },
+    []
+  )
+
+  const handleArchive = React.useCallback(() => {
+    if (selectedEmail) handleEmailAction(selectedEmail, "archive")
+  }, [selectedEmail, handleEmailAction])
+
+  const handleTrash = React.useCallback(() => {
+    if (selectedEmail) handleEmailAction(selectedEmail, "trash")
+  }, [selectedEmail, handleEmailAction])
+
+  const handleComposeMode = React.useCallback((mode: ComposeMode) => {
+    if (!selectedEmail) return
+    setComposeState(buildComposeState(mode, selectedEmail, bodyRef.current))
+  }, [selectedEmail])
+
+  const handleBodyLoaded = React.useCallback((body: string) => {
+    bodyRef.current = body
   }, [])
 
   // Keyboard shortcuts
   useHotkeys("e", () => {
-    if (selectedEmail) console.log("Archive", selectedEmail.subject)
-  }, { enableOnFormTags: false }, [selectedEmail])
+    if (selectedEmail) handleEmailAction(selectedEmail, "archive")
+  }, { enableOnFormTags: false }, [selectedEmail, handleEmailAction])
 
   useHotkeys("shift+3, backspace", () => {
-    if (selectedEmail) console.log("Trash", selectedEmail.subject)
-  }, { enableOnFormTags: false }, [selectedEmail])
+    if (selectedEmail) handleEmailAction(selectedEmail, "trash")
+  }, { enableOnFormTags: false }, [selectedEmail, handleEmailAction])
 
   useHotkeys("r", () => {
-    if (selectedEmail) console.log("Reply", selectedEmail.subject)
-  }, { enableOnFormTags: false }, [selectedEmail])
+    if (selectedEmail) handleComposeMode("reply")
+  }, { enableOnFormTags: false }, [selectedEmail, handleComposeMode])
+
+  useHotkeys("shift+r", () => {
+    if (selectedEmail) handleComposeMode("replyAll")
+  }, { enableOnFormTags: false }, [selectedEmail, handleComposeMode])
+
+  useHotkeys("f", () => {
+    if (selectedEmail) handleComposeMode("forward")
+  }, { enableOnFormTags: false }, [selectedEmail, handleComposeMode])
 
   useHotkeys("escape", () => {
-    if (composing) setComposing(false)
-    if (selectedEmail) setSelectedEmail(null)
-  }, { enableOnFormTags: true }, [selectedEmail, composing])
+    if (composeState) setComposeState(null)
+    else if (selectedEmail) setSelectedEmail(null)
+  }, { enableOnFormTags: true }, [selectedEmail, composeState])
 
-  // Background sync via Route Handler so it doesn't block Server Actions (getEmailBody)
+  // Background sync via Route Handler with polling every 60s
   React.useEffect(() => {
     let cancelled = false
-    fetch("/api/sync")
-      .then((res) => res.json())
-      .then((fresh: EmailHeader[]) => {
-        if (!cancelled && fresh.length > 0) {
-          const rehydrated = fresh.map((e) => ({
-            ...e,
-            date: new Date(e.date),
-          }))
-          setEmails(rehydrated)
-        }
-      })
-      .catch((err) => {
-        console.error("Background sync failed:", err)
-      })
+    const syncingRef = { current: false }
+
+    const doSync = () => {
+      if (syncingRef.current) return
+      syncingRef.current = true
+
+      fetch("/api/sync")
+        .then((res) => res.json())
+        .then((fresh: EmailHeader[]) => {
+          if (!cancelled && fresh.length > 0) {
+            const rehydrated = fresh.map((e) => ({
+              ...e,
+              date: new Date(e.date),
+            }))
+            // Only update if email IDs changed to avoid no-op re-renders
+            setEmails((prev) => {
+              const prevIds = prev.map((e) => `${e.accountLabel}-${e.id}`).join(",")
+              const newIds = rehydrated.map((e) => `${e.accountLabel}-${e.id}`).join(",")
+              return prevIds === newIds ? prev : rehydrated
+            })
+          }
+        })
+        .catch((err) => {
+          console.error("Background sync failed:", err)
+        })
+        .finally(() => {
+          syncingRef.current = false
+        })
+    }
+
+    doSync()
+    const interval = setInterval(doSync, 60_000)
+
     return () => {
       cancelled = true
+      clearInterval(interval)
     }
   }, [])
 
   const handleSelectEmail = (email: EmailHeader) => {
-    setComposing(false)
+    setComposeState(null)
     setSelectedEmail(email)
   }
 
   const handleCompose = () => {
     setSelectedEmail(null)
-    setComposing(true)
+    setComposeState({
+      mode: "new",
+      to: "",
+      cc: "",
+      subject: "",
+      quotedBody: "",
+      accountLabel: "Perso",
+    })
   }
 
   const handleCloseComposer = () => {
-    setComposing(false)
+    setComposeState(null)
   }
 
   const f = parseFilter(activeFilter)
   const folderName = folderLabels[f.folder] ?? f.folder
   const filterLabel = f.account ? `${f.account} — ${folderName}` : folderName
 
-  const breadcrumbLabel = composing
-    ? "Nouveau message"
+  const breadcrumbLabel = composeState
+    ? composeTitles[composeState.mode]
     : selectedEmail
       ? selectedEmail.subject
       : filterLabel
@@ -120,6 +231,7 @@ export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] })
             selectedEmail={selectedEmail}
             onSelectEmail={handleSelectEmail}
             activeFilter={activeFilter}
+            pendingRemovals={pendingRemovals}
           />
         </div>
 
@@ -136,8 +248,14 @@ export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] })
               </BreadcrumbList>
             </Breadcrumb>
             <div className="ml-auto flex items-center gap-2">
-              {selectedEmail && !composing && (
-                <MailActions email={selectedEmail} />
+              {selectedEmail && !composeState && (
+                <MailActions
+                  onArchive={handleArchive}
+                  onTrash={handleTrash}
+                  onReply={() => handleComposeMode("reply")}
+                  onReplyAll={() => handleComposeMode("replyAll")}
+                  onForward={() => handleComposeMode("forward")}
+                />
               )}
               <Button
                 variant="default"
@@ -150,10 +268,17 @@ export function MailLayout({ emails: initialEmails }: { emails: EmailHeader[] })
             </div>
           </header>
           <div className="flex-1 overflow-y-auto">
-            {composing ? (
-              <EmailComposer onClose={handleCloseComposer} />
+            {composeState ? (
+              <EmailComposer
+                key={composeState.mode + composeState.subject}
+                composeState={composeState}
+                onClose={handleCloseComposer}
+              />
             ) : (
-              <EmailView email={selectedEmail} />
+              <EmailView
+                email={selectedEmail}
+                onBodyLoaded={handleBodyLoaded}
+              />
             )}
           </div>
         </div>

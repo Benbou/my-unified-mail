@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import type { EmailHeader } from "@/lib/email"
+import { useEffect, useMemo, useState } from "react"
+import type { EmailHeader } from "@/lib/email-types"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getEmailBody, markAsRead } from "@/app/actions"
+import { sanitizeHtml } from "@/lib/sanitize"
 
 const formatFullDate = (date: Date) => {
   return new Intl.DateTimeFormat("fr-FR", {
@@ -16,7 +17,23 @@ const formatFullDate = (date: Date) => {
   }).format(new Date(date))
 }
 
-export function EmailView({ email }: { email: EmailHeader | null }) {
+function SafeHtmlBody({ body }: { body: string }) {
+  const sanitized = useMemo(() => sanitizeHtml(body), [body])
+  return (
+    <div
+      className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto"
+      dangerouslySetInnerHTML={{ __html: sanitized }}
+    />
+  )
+}
+
+export function EmailView({
+  email,
+  onBodyLoaded,
+}: {
+  email: EmailHeader | null
+  onBodyLoaded?: (body: string) => void
+}) {
   const [body, setBody] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -39,7 +56,8 @@ export function EmailView({ email }: { email: EmailHeader | null }) {
         if (cancelled) return
         setBody(html)
         setLoading(false)
-        return markAsRead(email.id, email.accountLabel)
+        onBodyLoaded?.(html)
+        return markAsRead(email.id, email.accountLabel, email.folder)
       })
       .catch(() => {
         if (cancelled) return
@@ -94,10 +112,7 @@ export function EmailView({ email }: { email: EmailHeader | null }) {
         )}
         {body !== null && !loading && !error && (
           body ? (
-            <div
-              className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto"
-              dangerouslySetInnerHTML={{ __html: body }}
-            />
+            <SafeHtmlBody body={body} />
           ) : (
             <p className="text-sm text-muted-foreground">
               Le contenu de cet email n&apos;a pas pu être chargé.

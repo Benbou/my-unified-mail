@@ -1,109 +1,127 @@
 # My Unified Mail
 
-Boîte de réception unifiée qui agrège les emails de plusieurs comptes Gmail dans une seule interface.
+Unified inbox aggregating emails from multiple Gmail accounts into a single interface.
 
-## Stack technique
+## Tech Stack
 
-- **Framework** : Next.js 16 (App Router, Server Components)
-- **Langage** : TypeScript
-- **UI** : shadcn/ui (Sidebar 09) + Tailwind CSS v4
-- **Email** : ImapFlow (IMAP) + Nodemailer (SMTP) + mailparser (simpleParser)
-- **Base de données** : Supabase (cache emails + threads)
-- **Éditeur** : Tiptap (rich text pour la composition)
-- **Fonts** : Geist Sans / Geist Mono
+- **Framework**: Next.js 16 (App Router, Server Components)
+- **Language**: TypeScript
+- **UI**: shadcn/ui (Sidebar 09) + Tailwind CSS v4
+- **Email**: ImapFlow (IMAP) + Nodemailer (SMTP) + mailparser (simpleParser) + isomorphic-dompurify (sanitize)
+- **Notifications**: Sonner (toast)
+- **Database**: Supabase (email cache + threads)
+- **Editor**: Tiptap (rich text for composition)
+- **Fonts**: Geist Sans / Geist Mono
 
 ## Architecture
 
 ```
 src/
 ├── app/
-│   ├── layout.tsx            # Layout racine (fonts, metadata, TooltipProvider)
-│   ├── page.tsx              # Server Component async → fetch emails → <MailLayout>
-│   ├── actions.ts            # Server Actions (getEmailBody, markAsRead, sendEmail, getThreadMessages)
-│   ├── api/sync/route.ts     # Route Handler GET /api/sync (sync IMAP sans bloquer les Server Actions)
-│   └── globals.css           # Variables CSS shadcn/ui + Tailwind v4
+│   ├── layout.tsx            # Root layout (fonts, metadata, TooltipProvider, Toaster)
+│   ├── page.tsx              # Async Server Component → fetch emails → <MailLayout>
+│   ├── actions.ts            # Server Actions (getEmailBody, markAsRead, sendEmail, archiveEmail, trashEmail, etc.)
+│   ├── api/sync/route.ts     # Route Handler GET /api/sync (IMAP sync without blocking Server Actions)
+│   └── globals.css           # shadcn/ui CSS variables + Tailwind v4
 ├── components/
-│   ├── mail-layout.tsx       # Client wrapper : état sélection + compose + sync optimiste
-│   ├── app-sidebar.tsx       # Sidebar icônes (nav : Tous / Perso / Pro / Envoyés / Corbeille)
-│   ├── email-list.tsx        # Liste emails scrollable avec recherche et filtres
-│   ├── email-view.tsx        # Panneau lecture : fetch body + Skeleton loading + erreur
-│   ├── email-composer.tsx    # Compositeur Tiptap (De / À / Objet / Corps / Toolbar)
-│   ├── nav-user.tsx          # Menu utilisateur en bas de la sidebar
-│   └── ui/                   # Composants shadcn/ui (button, sidebar, resizable, etc.)
+│   ├── mail-layout.tsx       # Client wrapper: selection state + compose (ComposeState) + 60s polling sync + optimistic UI
+│   ├── app-sidebar.tsx       # Icon sidebar (nav: All / Perso / Pro / Sent / Trash)
+│   ├── email-list.tsx        # Scrollable email list with search and filters
+│   ├── email-view.tsx        # Reading pane: fetch body + sanitize HTML + Skeleton loading + error
+│   ├── email-composer.tsx    # Tiptap composer (From / To / Cc / Subject / Body / Toolbar) — supports reply/replyAll/forward
+│   ├── mail-actions.tsx      # Action toolbar: Archive, Delete, Snooze, Reply, Reply All, Forward
+│   ├── nav-user.tsx          # User menu at bottom of sidebar
+│   └── ui/                   # shadcn/ui components (button, sidebar, sonner, etc.)
 ├── hooks/
-│   └── use-mobile.ts         # Hook détection mobile
+│   └── use-mobile.ts         # Mobile detection hook
 └── lib/
-    ├── email.ts              # Moteur IMAP/Supabase : fetch, sync, threads, body, envoi
-    ├── supabase.ts           # Client Supabase (graceful si non configuré)
-    └── utils.ts              # Utilitaire cn() (shadcn)
+    ├── email-types.ts        # Shared client/server types (EmailHeader, ComposeState, buildComposeState, composeTitles, normalizeSubject)
+    ├── email.ts              # IMAP/Supabase engine: fetch, sync, threads, body, send, archive, trash — re-exports from email-types
+    ├── sanitize.ts           # sanitizeHtml() via isomorphic-dompurify (XSS protection)
+    ├── supabase.ts           # Supabase client (graceful if not configured)
+    └── utils.ts              # cn() utility (shadcn)
 
 supabase/
 └── migrations/
-    ├── 001_create_emails.sql # Table emails (id, provider_id, account_label, subject, sender, date, body_html, is_read)
-    └── 002_add_thread_id.sql # Colonne thread_id + index
+    ├── 001_create_emails.sql # emails table (id, provider_id, account_label, subject, sender, date, body_html, is_read)
+    ├── 002_add_thread_id.sql # thread_id column + index
+    └── 004_add_recipients.sql # recipient, cc, account_email columns
 ```
 
-## Layout (3 colonnes resizable)
+## Layout (3-column)
 
-- **Colonne 1** : Sidebar collapsible (icônes de navigation)
-- **Colonne 2** : Liste emails (resizable, scrollable, avec recherche)
-- **Colonne 3** : Panneau lecture ou compositeur (resizable, scrollable)
+- **Column 1**: Collapsible sidebar (navigation icons)
+- **Column 2**: Email list (fixed 450px, scrollable, with search)
+- **Column 3**: Reading pane or composer (takes remaining space, scrollable)
 
-Chaque panneau scrolle indépendamment. La page ne scrolle jamais (`h-screen overflow-hidden`).
+Each panel scrolls independently. The page never scrolls (`h-screen overflow-hidden`).
 
-## Fonctionnement
+## How It Works
 
-### Lecture
-1. `page.tsx` (Server Component) appelle `getUnifiedEmails()` → charge depuis le cache Supabase (instantané) ou fallback IMAP
-2. `mail-layout.tsx` déclenche `fetch('/api/sync')` en background via `useEffect` → synchro IMAP silencieuse via Route Handler (ne bloque pas les Server Actions)
-3. Clic sur un email → `getEmailBody()` (Server Action) vérifie le cache Supabase, sinon fetch via IMAP + simpleParser → cache le résultat
-4. `markAsRead()` met à jour le flag `is_read` dans Supabase
+### Reading
+1. `page.tsx` (Server Component) calls `getUnifiedEmails()` → loads from Supabase cache (instant) or falls back to IMAP
+2. `mail-layout.tsx` triggers `fetch('/api/sync')` in background via `useEffect` → silent IMAP sync via Route Handler (doesn't block Server Actions) + **polls every 60s** with change-detection (no re-render if emails unchanged)
+3. Click on email → `getEmailBody()` (Server Action) checks Supabase cache, else fetches via IMAP + simpleParser → caches the result
+4. Email HTML is **sanitized via `isomorphic-dompurify`** before rendering (XSS protection)
+5. `markAsRead()` updates the `is_read` flag in Supabase
 
-> **Note** : Le sync utilise un Route Handler (`GET /api/sync`) au lieu d'une Server Action car Next.js sérialise les Server Actions par client — un sync long (5-30s) bloquerait `getEmailBody()`.
+> **Note**: Sync uses a Route Handler (`GET /api/sync`) instead of a Server Action because Next.js serializes Server Actions per client — a long sync (5-30s) would block `getEmailBody()`.
+
+### Email Actions
+- **Archive** (`e`) and **Delete** (`#` / `Backspace`) with optimistic UI + rollback on error + toast notifications
+- **Reply** (`r`), **Reply All** (`Shift+R`), **Forward** (`f`) — pre-fill the composer with blockquote citation
+- `moveEmail()` uses IMAP MOVE + Supabase delete/re-sync
 
 ### Threading
-- Les emails sont groupés par sujet normalisé (strip Re:/Fwd:/Fw:)
-- `groupByThread()` retourne des `ThreadGroup[]` triés par date
-- `getThreadMessages()` récupère tous les messages d'un thread depuis Supabase
+- Emails are grouped by normalized subject (strips Re:/Fwd:/Fw:)
+- `groupByThread()` returns `ThreadGroup[]` sorted by date
+- `getThreadMessages()` fetches all thread messages from Supabase
 
-### Composition & Envoi
-- Éditeur Tiptap avec toolbar (Gras, Italique, Titre, Listes)
-- Sélecteur de compte "De" (Perso / Pro)
-- `sendEmail()` utilise Nodemailer via Gmail SMTP (port 587, STARTTLS)
+### Composition & Sending
+- Tiptap editor with toolbar (Bold, Italic, Heading, Lists)
+- Account selector "From" (Perso / Pro)
+- **Cc** field (visible in reply all or manually toggled)
+- Modes: New / Reply / Reply All / Forward (via `ComposeState`)
+- `sendEmail()` uses Nodemailer via Gmail SMTP (port 587, STARTTLS) — supports `cc`
+
+### Important Architecture Patterns
+- **`email-types.ts`**: Shared client/server types (separated from `email.ts` which has server-only dependencies like ImapFlow). Client components import from `email-types.ts`, never from `email.ts` directly.
+- **`normalizeSubject()`** and **`composeTitles`**: Defined once in `email-types.ts`, imported everywhere
+- **Optimistic UI**: `pendingRemovals` Set to immediately hide archived/deleted emails with rollback on error
 
 ## Configuration
 
-`.env.local` (jamais commité) :
+`.env.local` (never committed):
 
 ```
 # Gmail
 GMAIL_1_USER=...
-GMAIL_1_PASS=...          # App password Gmail
+GMAIL_1_PASS=...          # Gmail App Password
 GMAIL_2_USER=...
 GMAIL_2_PASS=...
 
-# Supabase (optionnel — l'app fonctionne sans, en mode IMAP direct)
+# Supabase (optional — app works without it, in direct IMAP mode)
 NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 ```
 
-Pour obtenir un App Password Gmail : Google Account > Sécurité > Mots de passe des applications.
+To get a Gmail App Password: Google Account > Security > App Passwords.
 
 ## Conventions
 
-- Langue du code : anglais (noms de variables, types, fonctions)
-- Langue de l'UI : français
-- Composants UI : shadcn/ui (`npx shadcn@latest add <composant>`)
-- Styles : Tailwind utility classes uniquement
-- Server Components par défaut, `"use client"` uniquement si nécessaire
-- Les erreurs IMAP sont catchées par compte pour ne pas casser l'UI
-- Supabase est optionnel : toutes les fonctions vérifient `if (!supabase)` avant d'appeler
+- Code language: English (variable names, types, functions)
+- UI language: French
+- UI components: shadcn/ui (`npx shadcn@latest add <component>`)
+- Styles: Tailwind utility classes only
+- Server Components by default, `"use client"` only when necessary
+- IMAP errors are caught per account to avoid breaking the UI
+- Supabase is optional: all functions check `if (!supabase)` before calling
 
-## Commandes
+## Commands
 
 ```bash
-npm run dev       # Serveur de dev (http://localhost:3000)
-npm run build     # Build production
-npm run start     # Serveur production
+npm run dev       # Dev server (http://localhost:3000)
+npm run build     # Production build
+npm run start     # Production server
 npm run lint      # ESLint
 ```

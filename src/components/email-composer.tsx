@@ -14,6 +14,8 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import type { ComposeState } from "@/lib/email-types"
+import { composeTitles } from "@/lib/email-types"
 
 function ToolbarButton({
   onClick,
@@ -42,15 +44,25 @@ function ToolbarButton({
   )
 }
 
-export function EmailComposer({ onClose }: { onClose: () => void }) {
-  const [from, setFrom] = React.useState("Perso")
-  const [to, setTo] = React.useState("")
-  const [subject, setSubject] = React.useState("")
+export function EmailComposer({
+  composeState,
+  onClose,
+}: {
+  composeState: ComposeState
+  onClose: () => void
+}) {
+  const [from, setFrom] = React.useState(composeState.accountLabel)
+  const [to, setTo] = React.useState(composeState.to)
+  const [cc, setCc] = React.useState(composeState.cc)
+  const [subject, setSubject] = React.useState(composeState.subject)
   const [sending, setSending] = React.useState(false)
+  const [showCc, setShowCc] = React.useState(
+    composeState.mode === "replyAll" || !!composeState.cc
+  )
 
   const editor = useEditor({
     extensions: [StarterKit],
-    content: "",
+    content: composeState.quotedBody,
     immediatelyRender: false,
     editorProps: {
       attributes: {
@@ -70,6 +82,7 @@ export function EmailComposer({ onClose }: { onClose: () => void }) {
       await sendEmail({
         from,
         to,
+        cc: cc || undefined,
         subject,
         body: editor.getHTML(),
       })
@@ -81,10 +94,12 @@ export function EmailComposer({ onClose }: { onClose: () => void }) {
     }
   }
 
+  const title = composeTitles[composeState.mode]
+
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-0 h-full">
         <div className="flex items-center justify-between border-b px-6 py-3">
-          <h2 className="text-base font-semibold">Nouveau message</h2>
+          <h2 className="text-base font-semibold">{title}</h2>
           <Button
             type="button"
             variant="ghost"
@@ -130,7 +145,34 @@ export function EmailComposer({ onClose }: { onClose: () => void }) {
               required
               className="border-0 shadow-none focus-visible:ring-0 px-0"
             />
+            {!showCc && (
+              <button
+                type="button"
+                onClick={() => setShowCc(true)}
+                className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+              >
+                Cc
+              </button>
+            )}
           </div>
+          {showCc && (
+            <div className="flex items-center gap-3 border-b px-6 py-2">
+              <label
+                htmlFor="composer-cc"
+                className="text-sm font-medium text-muted-foreground w-10"
+              >
+                Cc
+              </label>
+              <Input
+                id="composer-cc"
+                type="text"
+                placeholder="cc@email.com"
+                value={cc}
+                onChange={(e) => setCc(e.target.value)}
+                className="border-0 shadow-none focus-visible:ring-0 px-0"
+              />
+            </div>
+          )}
           <div className="flex items-center gap-3 px-6 py-2">
             <label
               htmlFor="composer-subject"

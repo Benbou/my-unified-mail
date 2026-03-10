@@ -3,31 +3,12 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { supabase } from './supabase';
 
-export type EmailFolder = 'inbox' | 'sent' | 'trash' | 'archive';
+// Re-export types from the shared (client-safe) module
+export type { EmailFolder, EmailHeader, ThreadGroup, ComposeMode, ComposeState } from './email-types';
+export { buildComposeState, normalizeSubject } from './email-types';
 
-export type EmailHeader = {
-  id: string;
-  seq: number;
-  subject: string;
-  from: string;
-  date: Date;
-  accountLabel: string;
-  threadId: string;
-  folder: EmailFolder;
-};
-
-export type ThreadGroup = {
-  threadId: string;
-  subject: string;
-  latestDate: Date;
-  messageCount: number;
-  messages: EmailHeader[];
-  accountLabel: string;
-};
-
-function normalizeSubject(subject: string): string {
-  return subject.replace(/^(Re:\s*|Fwd:\s*|Fw:\s*)+/i, '').trim();
-}
+import type { EmailFolder, EmailHeader, ThreadGroup } from './email-types';
+import { normalizeSubject } from './email-types';
 
 function getAccountCreds(label: string): { user: string; pass: string } {
   if (label === 'Perso') {
@@ -108,17 +89,23 @@ async function fetchFromAccountFolder(
     const lock = await client.getMailboxLock(mailbox);
 
     try {
-      for await (const message of client.fetch('1:*', { envelope: true, internalDate: true }, { uid: true })) {
+      for await (const message of client.fetch('1:*', { envelope: true, internalDate: true, flags: true }, { uid: true })) {
         const subject = message.envelope?.subject || '(Pas de sujet)';
+        const toAddrs = (message.envelope?.to ?? []).map((a: { address?: string }) => a.address || '').filter(Boolean).join(', ');
+        const ccAddrs = (message.envelope?.cc ?? []).map((a: { address?: string }) => a.address || '').filter(Boolean).join(', ');
         emails.push({
           id: message.uid.toString(),
           seq: message.seq,
           subject,
           from: message.envelope?.from?.[0]?.address || 'Inconnu',
+          to: toAddrs,
+          cc: ccAddrs,
           date: new Date(message.internalDate ?? Date.now()),
           accountLabel: label,
+          accountEmail: user,
           threadId: normalizeSubject(subject),
           folder,
+          isRead: message.flags?.has('\\Seen') ?? false,
         });
       }
     } finally {
@@ -142,9 +129,13 @@ async function upsertToSupabase(emails: EmailHeader[]) {
     account_label: e.accountLabel,
     subject: e.subject,
     sender: e.from,
+    recipient: e.to,
+    cc: e.cc,
+    account_email: e.accountEmail,
     date: e.date.toISOString(),
     thread_id: e.threadId,
     folder: e.folder,
+    is_read: e.isRead,
   }));
 
   const { error } = await supabase
@@ -161,7 +152,7 @@ async function getCachedEmails(): Promise<EmailHeader[]> {
 
   const { data, error } = await supabase
     .from('emails')
-    .select('provider_id, account_label, subject, sender, date, thread_id, folder')
+    .select('provider_id, account_label, subject, sender, recipient, cc, account_email, date, thread_id, folder, is_read')
     .order('date', { ascending: false })
     .limit(200);
 
@@ -175,10 +166,14 @@ async function getCachedEmails(): Promise<EmailHeader[]> {
     seq: 0,
     subject: row.subject ?? '(Pas de sujet)',
     from: row.sender ?? 'Inconnu',
+    to: row.recipient ?? '',
+    cc: row.cc ?? '',
     date: new Date(row.date),
     accountLabel: row.account_label,
+    accountEmail: row.account_email ?? '',
     threadId: row.thread_id ?? '',
     folder: (row.folder ?? 'inbox') as EmailFolder,
+    isRead: row.is_read ?? false,
   }));
 }
 
@@ -279,18 +274,94 @@ export async function getEmailBody(providerId: string, accountLabel: string, fol
   return html;
 }
 
-export async function markAsRead(providerId: string, accountLabel: string) {
-  if (!supabase) return;
+export async function markAsRead(providerId: string, accountLabel: string, folder: EmailFolder = 'inbox') {
+  // 1. Update Supabase cache
+  if (supabase) {
+    const { error } = await supabase
+      .from('emails')
+      .update({ is_read: true })
+      .eq('provider_id', providerId)
+      .eq('account_label', accountLabel);
 
-  const { error } = await supabase
-    .from('emails')
-    .update({ is_read: true })
-    .eq('provider_id', providerId)
-    .eq('account_label', accountLabel);
-
-  if (error) {
-    console.error('markAsRead error:', error);
+    if (error) {
+      console.error('markAsRead supabase error:', error);
+    }
   }
+
+  // 2. Set IMAP \Seen flag
+  const { user, pass } = getAccountCreds(accountLabel);
+  const client = new ImapFlow({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    auth: { user, pass },
+    logger: false,
+    socketTimeout: 30_000,
+  });
+
+  try {
+    await client.connect();
+    const mailbox = await resolveMailboxPath(client, folder);
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      await client.messageFlagsAdd(Number(providerId), ['\\Seen'], { uid: true });
+    } finally {
+      lock.release();
+    }
+  } catch (err) {
+    console.error(`markAsRead IMAP error for ${providerId} (${accountLabel}/${folder}):`, err);
+  } finally {
+    await safeImapDisconnect(client);
+  }
+}
+
+export async function moveEmail(
+  providerId: string,
+  accountLabel: string,
+  fromFolder: EmailFolder,
+  toFolder: EmailFolder
+): Promise<void> {
+  const { user, pass } = getAccountCreds(accountLabel);
+  const client = new ImapFlow({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    auth: { user, pass },
+    logger: false,
+    socketTimeout: 30_000,
+  });
+
+  try {
+    await client.connect();
+    const srcPath = await resolveMailboxPath(client, fromFolder);
+    const destPath = await resolveMailboxPath(client, toFolder);
+    const lock = await client.getMailboxLock(srcPath);
+    try {
+      await client.messageMove(Number(providerId), destPath, { uid: true });
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await safeImapDisconnect(client);
+  }
+
+  // Delete the Supabase row — UID changes after MOVE, next sync will re-insert
+  if (supabase) {
+    await supabase
+      .from('emails')
+      .delete()
+      .eq('provider_id', providerId)
+      .eq('account_label', accountLabel)
+      .eq('folder', fromFolder);
+  }
+}
+
+export async function archiveEmail(providerId: string, accountLabel: string, fromFolder: EmailFolder): Promise<void> {
+  return moveEmail(providerId, accountLabel, fromFolder, 'archive');
+}
+
+export async function trashEmail(providerId: string, accountLabel: string, fromFolder: EmailFolder): Promise<void> {
+  return moveEmail(providerId, accountLabel, fromFolder, 'trash');
 }
 
 export function groupByThread(emails: EmailHeader[]): ThreadGroup[] {
@@ -328,7 +399,7 @@ export async function getThreadMessages(threadId: string): Promise<EmailHeader[]
 
   const { data, error } = await supabase
     .from('emails')
-    .select('provider_id, account_label, subject, sender, date, thread_id, folder')
+    .select('provider_id, account_label, subject, sender, recipient, cc, account_email, date, thread_id, folder, is_read')
     .eq('thread_id', threadId)
     .order('date', { ascending: true });
 
@@ -342,9 +413,13 @@ export async function getThreadMessages(threadId: string): Promise<EmailHeader[]
     seq: 0,
     subject: row.subject ?? '(Pas de sujet)',
     from: row.sender ?? 'Inconnu',
+    to: row.recipient ?? '',
+    cc: row.cc ?? '',
     date: new Date(row.date),
     accountLabel: row.account_label,
+    accountEmail: row.account_email ?? '',
     threadId: row.thread_id ?? '',
     folder: (row.folder ?? 'inbox') as EmailFolder,
+    isRead: row.is_read ?? false,
   }));
 }

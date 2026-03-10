@@ -1,0 +1,3 @@
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS recipient text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS cc text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS account_email text;

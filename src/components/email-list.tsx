@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { parseFilter } from "@/components/app-sidebar"
-import type { EmailHeader } from "@/lib/email"
+import type { EmailHeader } from "@/lib/email-types"
 
 const formatDate = (date: Date) => {
   const now = new Date()
@@ -47,13 +47,16 @@ export function EmailList({
   selectedEmail,
   onSelectEmail,
   activeFilter,
+  pendingRemovals,
 }: {
   emails: EmailHeader[]
   selectedEmail: EmailHeader | null
   onSelectEmail: (email: EmailHeader) => void
   activeFilter: string
+  pendingRemovals: Set<string>
 }) {
   const [search, setSearch] = React.useState("")
+  const [unreadOnly, setUnreadOnly] = React.useState(false)
 
   const filteredEmails = React.useMemo(() => {
     const f = parseFilter(activeFilter)
@@ -67,6 +70,18 @@ export function EmailList({
     // Filter by folder
     result = result.filter((e) => e.folder === f.folder)
 
+    // Filter out pending removals
+    if (pendingRemovals.size > 0) {
+      result = result.filter(
+        (e) => !pendingRemovals.has(`${e.accountLabel}-${e.id}`)
+      )
+    }
+
+    // Filter unread only
+    if (unreadOnly) {
+      result = result.filter((e) => !e.isRead)
+    }
+
     if (search) {
       const q = search.toLowerCase()
       result = result.filter(
@@ -77,7 +92,7 @@ export function EmailList({
     }
 
     return result
-  }, [emails, activeFilter, search])
+  }, [emails, activeFilter, search, pendingRemovals, unreadOnly])
 
   return (
     <div className="flex h-full flex-col">
@@ -88,7 +103,11 @@ export function EmailList({
           </div>
           <Label className="flex items-center gap-2 text-sm">
             <span>Non lus</span>
-            <Switch className="shadow-none" />
+            <Switch
+              className="shadow-none"
+              checked={unreadOnly}
+              onCheckedChange={setUnreadOnly}
+            />
           </Label>
         </div>
         <div className="mt-3 w-full">
@@ -122,7 +141,12 @@ export function EmailList({
               }`}
             >
               <div className="flex w-full items-center gap-2">
-                <span className="truncate font-medium">{email.from}</span>
+                <span className={`truncate ${!email.isRead ? "font-semibold" : "font-medium"}`}>
+                  {email.from}
+                </span>
+                {!email.isRead && (
+                  <span className="size-2 shrink-0 rounded-full bg-blue-500" />
+                )}
                 <span
                   className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
                     email.accountLabel === "Perso"
@@ -134,7 +158,9 @@ export function EmailList({
                 </span>
               </div>
               <div className="flex w-full items-center gap-2">
-                <span className="truncate">{email.subject}</span>
+                <span className={`truncate ${!email.isRead ? "font-semibold" : ""}`}>
+                  {email.subject}
+                </span>
                 <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                   {formatDate(email.date)}
                 </span>
